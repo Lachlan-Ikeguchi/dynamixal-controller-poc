@@ -17,4 +17,8 @@ ln -sf $(pwd)/.venv .platformio/penv
 
 .venv/bin/pio run -t compiledb
 
-echo "\n\nrun source .venv/bin/activate\n\n"
+echo ""
+echo ""
+echo "run 'source source.bash'"
+echo ""
+echo ""
