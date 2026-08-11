@@ -1,1 +1,2 @@
-This is a script to attempt to move the motors.  Requires platformio with python3.13 or python3.11
+# What is this?
+This is a proof of concept program which will run on a raspberry pi and provide an interface through wifi to control the angle of the arm servos.

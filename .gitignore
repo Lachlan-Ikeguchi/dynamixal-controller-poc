@@ -1,13 +1,2 @@
-# Virtual environment
-.venv/
-
-# PlatformIO
-.pio
-.platformio/
-
-# Build artifacts
 build/
-compile_commands.json
-
-# Managed components
-managed_components/
+.cache/
