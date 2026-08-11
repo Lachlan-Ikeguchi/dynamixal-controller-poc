@@ -1,2 +1,17 @@
+# Build directory
 build/
+
+# Output directory
+out/
+
+# IDE/Editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Cache
 .cache/
