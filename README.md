@@ -16,9 +16,12 @@ The project requires the ROBOTIS Dynamixel SDK. Install it from source:
 ```bash
 # Clone the SDK
 git clone https://github.com/ROBOTIS-GIT/DynamixelSDK.git
-cd DynamixelSDK/c++/build/linux64
-make
-sudo make install
+cd DynamixelSDK/c++/
+mkdir out
+cd out
+cmake ..
+cmake --build .
+sudo cmake --install .
 ```
 
 This installs the library to `/usr/local/lib` and headers to `/usr/local/include`.
@@ -59,18 +62,4 @@ Remove build artifacts:
 
 ```bash
 make clean
-```
-
-## Project Structure
-
-```
-.
-├── include/     # Header files
-├── lib/         # Library source
-├── out/         # Build output (ignored by git)
-├── src/         # Application source
-│   └── main.cpp
-├── test/        # Tests
-├── Makefile     # Build configuration
-└── README.md
 ```
