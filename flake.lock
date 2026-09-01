@@ -1,5 +1,21 @@
 {
   "nodes": {
+    "dynamixel": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1778033126,
+        "narHash": "sha256-NJynAxKJH/VPyYTWbS+56yTKOmXyo5B7pXwiN2gnbXY=",
+        "owner": "ROBOTIS-GIT",
+        "repo": "DynamixelSDK",
+        "rev": "2ded684dff05a40ac78d6a16105c6ddc1b3b9930",
+        "type": "github"
+      },
+      "original": {
+        "owner": "ROBOTIS-GIT",
+        "repo": "DynamixelSDK",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1787736819,
@@ -18,6 +34,7 @@
     },
     "root": {
       "inputs": {
+        "dynamixel": "dynamixel",
         "nixpkgs": "nixpkgs"
       }
     }
