@@ -20,24 +20,28 @@
       dynamixel-sdk = pkgs.stdenv.mkDerivation {
         name = "dynamixel-sdk";
         version = "0.0.0";
-        src = dynamixel;
+        src = "${dynamixel}";
         nativeBuildInputs = with pkgs; [
           cmake
           ninja
         ];
 
-        # Override all phases to do our own thing
-        # phases = "installPhase";
+        configurePhase = ''
+          mkdir -p /tmp/dxl-build
+          cd /tmp/dxl-build
+          cmake $src/c++ -DCMAKE_INSTALL_PREFIX=$out
+        '';
 
-        # installPhase = ''
-        #   mkdir -p $out
-        #   # Create build dir in writable location
-        #   mkdir -p /tmp/dxl-build
-        #   cd /tmp/dxl-build
-        #   cmake $src/c++ -DCMAKE_INSTALL_PREFIX=$out
-        #   cmake --build .
-        #   cmake --install .
-        # '';
+        buildPhase = ''
+          cd /tmp/dxl-build
+          cmake --build .
+        '';
+
+        installPhase = ''
+          mkdir -p $out
+          cd /tmp/dxl-build
+          cmake --install .
+        '';
       };
     in
     {
