@@ -1,19 +1,47 @@
 #include "dynamixel_sdk/dynamixel_sdk.h"
 #include <iostream>
 #include <cstdlib> // for abs()
+#include <string>
 
-// Configuration constants for easy modification
+// Configuration defaults
 const char* DEVICE_NAME = "/dev/ttyUSB0";
-const int BAUD_RATE = 57600;
-const uint8_t DXL_ID = 1;
+int BAUD_RATE = 57600;
+uint8_t DXL_ID = 1;
 const uint16_t TORQUE_ENABLE_ADDRESS = 64;
 const uint16_t GOAL_POSITION_ADDRESS = 116;
 const uint16_t PRESENT_POSITION_ADDRESS = 132;
 const int POSITION_THRESHOLD = 10;
 const int MAX_READ_ATTEMPTS = 5;
-const float PACKET_TIMEOUT_MS = 500.0;
 
-int main() {
+void printUsage(const char* progName) {
+  std::cout << "Usage: " << progName << " [options]\n"
+            << "Options:\n"
+            << "  --device <path>   Serial port path (default: /dev/ttyUSB0)\n"
+            << "  --baud <rate>      Baud rate (default: 57600)\n"
+            << "  --id <n>           Dynamixel servo ID (default: 1)\n"
+            << "  --help             Show this help message and exit\n";
+}
+
+int main(int argc, char** argv) {
+  // Parse CLI arguments
+  for (int i = 1; i < argc; i++) {
+    std::string arg = argv[i];
+    if (arg == "--help") {
+      printUsage(argv[0]);
+      return 0;
+    } else if (arg == "--device" && i + 1 < argc) {
+      DEVICE_NAME = argv[++i];
+    } else if (arg == "--baud" && i + 1 < argc) {
+      BAUD_RATE = std::atoi(argv[++i]);
+    } else if (arg == "--id" && i + 1 < argc) {
+      DXL_ID = static_cast<uint8_t>(std::atoi(argv[++i]));
+    } else {
+      std::cerr << "Unknown or incomplete argument: " << arg << "\n";
+      printUsage(argv[0]);
+      return 1;
+    }
+  }
+
   // Setup port handler
   dynamixel::PortHandler *portHandler =
       dynamixel::PortHandler::getPortHandler(DEVICE_NAME);
@@ -43,9 +71,8 @@ int main() {
   }
   std::cout << "Succeeded to change the baudrate!\n";
 
-  // Clear port buffer and set timeout for reliable communication
+  // Clear port buffer
   portHandler->clearPort();
-  portHandler->setPacketTimeout(PACKET_TIMEOUT_MS);
 
   // Auto-detect protocol (MX-106R with 2.0 firmware most likely uses Protocol 2.0)
   std::cout << "Auto-detecting servo protocol...\n";

@@ -9,3 +9,5 @@ find_package(dynamixel_sdk CONFIG REQUIRED)
 add_executable(dynamixal-controller src/main.cpp)
 
 target_link_libraries(dynamixal-controller PRIVATE dynamixel_sdk::dynamixel_sdk)
+
+install(TARGETS dynamixal-controller RUNTIME DESTINATION bin)

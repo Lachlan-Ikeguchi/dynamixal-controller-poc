@@ -1,65 +1,69 @@
 # Dynamixal Controller POC
 
-A proof of concept program that runs on a Raspberry Pi and provides an interface through WiFi to control the angle of Dynamixel servo arm motors.
+A proof of concept program that provides a command-line interface to control the angle of Dynamixel servo motors via a USB adapter.
 
 ## Prerequisites
 
-- Raspberry Pi (or other Linux SBC)
-- g++ compiler (C++17 support)
-- Dynamixel SDK C++ library (`libdxl_x64_cpp`)
-- Dynamixel servos connected via USB adapter
-
-### Install Dynamixel SDK
-
-The project requires the ROBOTIS Dynamixel SDK. Install it from source:
-
-```bash
-# Clone the SDK
-git clone https://github.com/ROBOTIS-GIT/DynamixelSDK.git
-cd DynamixelSDK/c++/
-mkdir out
-cd out
-cmake ..
-cmake --build .
-sudo cmake --install .
-```
-
-This installs the library to `/usr/local/lib` and headers to `/usr/local/include`.
+- [Nix](https://nixos.org/) with flakes enabled
+- Dynamixel servos connected via FTDI USB adapter
 
 ## Build
 
 ```bash
-make
+nix build
 ```
 
-This compiles the source and creates the executable at `out/dynamixal-controller`.
+The binary is available at `result/bin/dynamixal-controller`.
 
 ## Run
 
+With defaults (`/dev/ttyUSB0`, baud 57600, servo ID 1):
+
 ```bash
-make run
+nix run .
 ```
 
-Or manually:
+With explicit options:
 
 ```bash
-./out/dynamixal-controller
+nix run . -- --device /dev/ttyUSB0 --baud 57600 --id 1
+```
+
+Run `nix run . -- --help` to see all options.
+
+## Dev Shell
+
+```bash
+nix develop
+```
+
+Provides gcc, cmake, ninja, and the Dynamixel SDK on the path.
+
+## FTDI Latency Timer
+
+The FTDI USB adapter defaults to a 16ms latency timer, which causes noticeable lag in servo communication. A udev rule is included to set it to 1ms automatically when the device is plugged in:
+
+```bash
+sudo cp 40-dynamixel-ftdi.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+sudo udevadm trigger
 ```
 
 ## Usage
 
 Once running, the program will:
-1. Attempt to open the serial port (`/dev/ttyUSB0` by default)
-2. Set the baud rate to 57600
-3. Ping the servo (ID 1) to verify communication
+1. Open the serial port (`/dev/ttyUSB0` by default)
+2. Set the baud rate (57600 by default)
+3. Ping the servo to verify communication (auto-detects Protocol 1.0 or 2.0)
 4. Enable torque on the servo
 
-You can then enter target positions (0-4095) to move the servo. Enter `-1` to exit.
+Enter target positions (0-4095) to move the servo. Enter `-1` to exit.
 
-## Clean
-
-Remove build artifacts:
+## Checks
 
 ```bash
-make clean
+nix flake check
+```
+
+Runs a smoke test that builds the binary and verifies `--help` exits successfully.
 ```

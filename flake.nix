@@ -2,7 +2,7 @@
   description = "A ROS 2 message to dynamixel interface";
 
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
+    nixpkgs.url = "github:nixos/nixpkgs";
     flake-utils.url = "github:numtide/flake-utils";
     dynamixel = {
       url = "github:/ROBOTIS-GIT/DynamixelSDK";
@@ -25,26 +25,25 @@
           version = "0.0.0";
           src = "${dynamixel}";
           patches = [ ./patches/ftdi-baud-rate.patch ];
-          nativeBuildInputs = with pkgs; [
-            cmake
-            ninja
-          ];
-
+          nativeBuildInputs = [ pkgs.cmake pkgs.ninja ];
           configurePhase = ''
-            mkdir -p /tmp/dxl-build
-            cd /tmp/dxl-build
-            cmake $NIX_BUILD_TOP/source/c++ -DCMAKE_INSTALL_PREFIX=$out
+            runHook preConfigure
+            mkdir -p $NIX_BUILD_TOP/dxl-build
+            cd $NIX_BUILD_TOP/dxl-build
+            cmake -DCMAKE_INSTALL_PREFIX=$out $NIX_BUILD_TOP/source/c++
+            runHook postConfigure
           '';
-
           buildPhase = ''
-            cd /tmp/dxl-build
+            runHook preBuild
+            cd $NIX_BUILD_TOP/dxl-build
             cmake --build .
+            runHook postBuild
           '';
-
           installPhase = ''
-            mkdir -p $out
-            cd /tmp/dxl-build
+            runHook preInstall
+            cd $NIX_BUILD_TOP/dxl-build
             cmake --install .
+            runHook postInstall
           '';
         };
       in
@@ -61,25 +60,24 @@
         packages.default = pkgs.stdenv.mkDerivation {
           name = "dynamixel-controller";
           src = self;
-          nativeBuildInputs = with pkgs; [
-            cmake
-            gcc
-            ninja
-          ];
+          nativeBuildInputs = [ pkgs.cmake pkgs.gcc pkgs.ninja ];
           buildInputs = [ dynamixel-sdk ];
           cmakeFlags = [
             "-DCMAKE_PREFIX_PATH=${dynamixel-sdk}"
             "-DCMAKE_BUILD_TYPE=Release"
           ];
-          phases = "installPhase";
-          installPhase = ''
-            mkdir -p $out/bin
-            mkdir -p /tmp/build
-            cd /tmp/build
-            cmake $src -DCMAKE_PREFIX_PATH=${dynamixel-sdk} -DCMAKE_BUILD_TYPE=Release
-            cmake --build .
-            cp dynamixal-controller $out/bin/
-          '';
         };
+
+        apps.default = {
+          type = "app";
+          program = "${self.packages.${system}.default}/bin/dynamixal-controller";
+        };
+
+        checks.default = pkgs.runCommand "smoke-test" {
+          buildInputs = [ self.packages.${system}.default ];
+        } ''
+          dynamixal-controller --help
+          touch $out
+        '';
       });
 }
