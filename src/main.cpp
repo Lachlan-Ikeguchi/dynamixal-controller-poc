@@ -47,28 +47,38 @@ int main() {
   portHandler->clearPort();
   portHandler->setPacketTimeout(PACKET_TIMEOUT_MS);
 
-  // Auto-detect protocol (MX-106 with 2.0 firmware supports both 1.0 and 2.0)
+  // Auto-detect protocol (MX-106R with 2.0 firmware most likely uses Protocol 2.0)
   std::cout << "Auto-detecting servo protocol...\n";
 
-  // Try Protocol 1.0 first
-  packetHandler = dynamixel::PacketHandler::getPacketHandler(1.0);
-  uint16_t model_number_1 = 0;
-  dxl_comm_result = packetHandler->ping(portHandler, DXL_ID, &model_number_1, &dxl_error);
+  // Try Protocol 2.0 first
+  packetHandler = dynamixel::PacketHandler::getPacketHandler(2.0);
+  uint16_t model_number_2 = 0;
+  dxl_comm_result = packetHandler->ping(portHandler, DXL_ID, &model_number_2, &dxl_error);
 
   if (dxl_comm_result == COMM_SUCCESS && dxl_error == 0) {
-    model_number = model_number_1;
-    std::cout << "Detected Protocol: 1.0\n";
+    model_number = model_number_2;
+    std::cout << "Detected Protocol: 2.0\n";
   } else {
-    // Try Protocol 2.0
-    delete packetHandler;
-    packetHandler = dynamixel::PacketHandler::getPacketHandler(2.0);
-    uint16_t model_number_2 = 0;
-    dxl_comm_result = packetHandler->ping(portHandler, DXL_ID, &model_number_2, &dxl_error);
+    // Print diagnostic for the Protocol 2.0 failure
+    std::cout << "Protocol 2.0 ping failed:\n";
+    std::cout << "  Comm result: " << packetHandler->getTxRxResult(dxl_comm_result) << std::endl;
+    if (dxl_error != 0)
+      std::cout << "  Hardware error: " << packetHandler->getRxPacketError(dxl_error) << std::endl;
+
+    // Try Protocol 1.0
+    packetHandler = dynamixel::PacketHandler::getPacketHandler(1.0);
+    uint16_t model_number_1 = 0;
+    dxl_comm_result = packetHandler->ping(portHandler, DXL_ID, &model_number_1, &dxl_error);
 
     if (dxl_comm_result == COMM_SUCCESS && dxl_error == 0) {
-      model_number = model_number_2;
-      std::cout << "Detected Protocol: 2.0\n";
+      model_number = model_number_1;
+      std::cout << "Detected Protocol: 1.0\n";
     } else {
+      std::cout << "Protocol 1.0 ping failed:\n";
+      std::cout << "  Comm result: " << packetHandler->getTxRxResult(dxl_comm_result) << std::endl;
+      if (dxl_error != 0)
+        std::cout << "  Hardware error: " << packetHandler->getRxPacketError(dxl_error) << std::endl;
+
       std::cout << "[ERROR] Failed to detect protocol - neither 1.0 nor 2.0 worked\n";
       std::cout << "Check: 1) Servo is powered\n";
       std::cout << "       2) USB adapter is properly connected (RX->TX, TX->RX, GND->GND)\n";
@@ -188,7 +198,6 @@ int main() {
               << packetHandler->getTxRxResult(dxl_comm_result) << std::endl;
   }
 
-  delete packetHandler;
   portHandler->closePort();
   std::cout << "Port closed. Exiting...\n";
 

@@ -24,6 +24,7 @@
           name = "dynamixel-sdk";
           version = "0.0.0";
           src = "${dynamixel}";
+          patches = [ ./patches/ftdi-baud-rate.patch ];
           nativeBuildInputs = with pkgs; [
             cmake
             ninja
@@ -32,7 +33,7 @@
           configurePhase = ''
             mkdir -p /tmp/dxl-build
             cd /tmp/dxl-build
-            cmake $src/c++ -DCMAKE_INSTALL_PREFIX=$out
+            cmake $NIX_BUILD_TOP/source/c++ -DCMAKE_INSTALL_PREFIX=$out
           '';
 
           buildPhase = ''
