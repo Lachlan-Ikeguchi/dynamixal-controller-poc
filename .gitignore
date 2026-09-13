@@ -1,8 +1,6 @@
-# Build directory
-build/
-
-# Output directory
+# Compiler output
 out/
+result
 
 # IDE/Editor
 .vscode/

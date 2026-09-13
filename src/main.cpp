@@ -1,19 +1,47 @@
 #include "dynamixel_sdk/dynamixel_sdk.h"
 #include <iostream>
 #include <cstdlib> // for abs()
+#include <string>
 
-// Configuration constants for easy modification
+// Configuration defaults
 const char* DEVICE_NAME = "/dev/ttyUSB0";
-const int BAUD_RATE = 57600;
-const uint8_t DXL_ID = 1;
+int BAUD_RATE = 57600;
+uint8_t DXL_ID = 1;
 const uint16_t TORQUE_ENABLE_ADDRESS = 64;
 const uint16_t GOAL_POSITION_ADDRESS = 116;
 const uint16_t PRESENT_POSITION_ADDRESS = 132;
 const int POSITION_THRESHOLD = 10;
 const int MAX_READ_ATTEMPTS = 5;
-const float PACKET_TIMEOUT_MS = 500.0;
 
-int main() {
+void printUsage(const char* progName) {
+  std::cout << "Usage: " << progName << " [options]\n"
+            << "Options:\n"
+            << "  --device <path>   Serial port path (default: /dev/ttyUSB0)\n"
+            << "  --baud <rate>      Baud rate (default: 57600)\n"
+            << "  --id <n>           Dynamixel servo ID (default: 1)\n"
+            << "  --help             Show this help message and exit\n";
+}
+
+int main(int argc, char** argv) {
+  // Parse CLI arguments
+  for (int i = 1; i < argc; i++) {
+    std::string arg = argv[i];
+    if (arg == "--help") {
+      printUsage(argv[0]);
+      return 0;
+    } else if (arg == "--device" && i + 1 < argc) {
+      DEVICE_NAME = argv[++i];
+    } else if (arg == "--baud" && i + 1 < argc) {
+      BAUD_RATE = std::atoi(argv[++i]);
+    } else if (arg == "--id" && i + 1 < argc) {
+      DXL_ID = static_cast<uint8_t>(std::atoi(argv[++i]));
+    } else {
+      std::cerr << "Unknown or incomplete argument: " << arg << "\n";
+      printUsage(argv[0]);
+      return 1;
+    }
+  }
+
   // Setup port handler
   dynamixel::PortHandler *portHandler =
       dynamixel::PortHandler::getPortHandler(DEVICE_NAME);
@@ -43,32 +71,41 @@ int main() {
   }
   std::cout << "Succeeded to change the baudrate!\n";
 
-  // Clear port buffer and set timeout for reliable communication
+  // Clear port buffer
   portHandler->clearPort();
-  portHandler->setPacketTimeout(PACKET_TIMEOUT_MS);
 
-  // Auto-detect protocol (MX-106 with 2.0 firmware supports both 1.0 and 2.0)
+  // Auto-detect protocol (MX-106R with 2.0 firmware most likely uses Protocol 2.0)
   std::cout << "Auto-detecting servo protocol...\n";
 
-  // Try Protocol 1.0 first
-  packetHandler = dynamixel::PacketHandler::getPacketHandler(1.0);
-  uint16_t model_number_1 = 0;
-  dxl_comm_result = packetHandler->ping(portHandler, DXL_ID, &model_number_1, &dxl_error);
+  // Try Protocol 2.0 first
+  packetHandler = dynamixel::PacketHandler::getPacketHandler(2.0);
+  uint16_t model_number_2 = 0;
+  dxl_comm_result = packetHandler->ping(portHandler, DXL_ID, &model_number_2, &dxl_error);
 
   if (dxl_comm_result == COMM_SUCCESS && dxl_error == 0) {
-    model_number = model_number_1;
-    std::cout << "Detected Protocol: 1.0\n";
+    model_number = model_number_2;
+    std::cout << "Detected Protocol: 2.0\n";
   } else {
-    // Try Protocol 2.0
-    delete packetHandler;
-    packetHandler = dynamixel::PacketHandler::getPacketHandler(2.0);
-    uint16_t model_number_2 = 0;
-    dxl_comm_result = packetHandler->ping(portHandler, DXL_ID, &model_number_2, &dxl_error);
+    // Print diagnostic for the Protocol 2.0 failure
+    std::cout << "Protocol 2.0 ping failed:\n";
+    std::cout << "  Comm result: " << packetHandler->getTxRxResult(dxl_comm_result) << std::endl;
+    if (dxl_error != 0)
+      std::cout << "  Hardware error: " << packetHandler->getRxPacketError(dxl_error) << std::endl;
+
+    // Try Protocol 1.0
+    packetHandler = dynamixel::PacketHandler::getPacketHandler(1.0);
+    uint16_t model_number_1 = 0;
+    dxl_comm_result = packetHandler->ping(portHandler, DXL_ID, &model_number_1, &dxl_error);
 
     if (dxl_comm_result == COMM_SUCCESS && dxl_error == 0) {
-      model_number = model_number_2;
-      std::cout << "Detected Protocol: 2.0\n";
+      model_number = model_number_1;
+      std::cout << "Detected Protocol: 1.0\n";
     } else {
+      std::cout << "Protocol 1.0 ping failed:\n";
+      std::cout << "  Comm result: " << packetHandler->getTxRxResult(dxl_comm_result) << std::endl;
+      if (dxl_error != 0)
+        std::cout << "  Hardware error: " << packetHandler->getRxPacketError(dxl_error) << std::endl;
+
       std::cout << "[ERROR] Failed to detect protocol - neither 1.0 nor 2.0 worked\n";
       std::cout << "Check: 1) Servo is powered\n";
       std::cout << "       2) USB adapter is properly connected (RX->TX, TX->RX, GND->GND)\n";
@@ -188,7 +225,6 @@ int main() {
               << packetHandler->getTxRxResult(dxl_comm_result) << std::endl;
   }
 
-  delete packetHandler;
   portHandler->closePort();
   std::cout << "Port closed. Exiting...\n";
 
