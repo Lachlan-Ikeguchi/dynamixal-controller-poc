@@ -1,28 +1,152 @@
+#include "dynamixel_controller.hpp"
 #include "dynamixel_sdk/dynamixel_sdk.h"
-#include <iostream>
-#include <cstdlib> // for abs()
-#include <string>
 
-// Configuration defaults
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <iostream>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+// Defaults
 const char* DEVICE_NAME = "/dev/ttyUSB0";
 int BAUD_RATE = 57600;
-uint8_t DXL_ID = 1;
-const uint16_t TORQUE_ENABLE_ADDRESS = 64;
-const uint16_t GOAL_POSITION_ADDRESS = 116;
-const uint16_t PRESENT_POSITION_ADDRESS = 132;
-const int POSITION_THRESHOLD = 10;
+
+// Position-reach polling (10 raw counts worth of radians at 4096 cpr)
+const double POSITION_THRESHOLD_RAD = DynamixelController::unitsToRadians(10);
 const int MAX_READ_ATTEMPTS = 5;
 
 void printUsage(const char* progName) {
   std::cout << "Usage: " << progName << " [options]\n"
             << "Options:\n"
             << "  --device <path>   Serial port path (default: /dev/ttyUSB0)\n"
-            << "  --baud <rate>      Baud rate (default: 57600)\n"
-            << "  --id <n>           Dynamixel servo ID (default: 1)\n"
-            << "  --help             Show this help message and exit\n";
+            << "  --baud <rate>     Baud rate (default: 57600)\n"
+            << "  --help            Show this help message and exit\n";
 }
 
-int main(int argc, char** argv) {
+static void printServos(const std::vector<uint8_t>& ids) {
+  for (std::size_t i = 0; i < ids.size(); ++i) {
+    if (i > 0) std::cout << ',';
+    std::cout << " ID " << static_cast<int>(ids[i]);
+  }
+}
+
+static void printPositions(const std::unordered_map<uint8_t, double>& positions) {
+  std::vector<uint8_t> ids;
+  ids.reserve(positions.size());
+  for (const auto & [id, _] : positions) ids.push_back(id);
+  std::sort(ids.begin(), ids.end());
+  for (uint8_t id : ids) {
+    std::cout << "  ID " << static_cast<int>(id) << ": "
+              << positions.at(id) << " rad\n";
+  }
+}
+
+// Protocol auto-detection using the raw SDK (diagnostic pre-check).
+// Returns 0 when Protocol 2.0 is detected, 1 otherwise.
+// On success, model_number_out is set to the detected model number.
+int detectProtocol(const char* device, int baud, uint16_t& model_number_out) {
+  dynamixel::PortHandler* portHandler =
+      dynamixel::PortHandler::getPortHandler(device);
+  uint8_t dxl_error = 0;
+  int dxl_comm_result = COMM_TX_FAIL;
+
+  std::cout << "Opening " << device << " at " << baud << " baud...\n";
+
+  if (!portHandler->openPort()) {
+    std::cerr << "error: cannot open port\n"
+              << "  1) Port exists: ls " << device << "\n"
+              << "  2) Read/write permission: add user to 'dialout' group\n"
+              << "  3) No other process is using the port\n";
+    return 1;
+  }
+
+  if (!portHandler->setBaudRate(baud)) {
+    std::cerr << "error: cannot set baud rate\n"
+              << "  Try a different rate: 1000000, 115200, 57600, 38400\n";
+    portHandler->closePort();
+    return 1;
+  }
+
+  portHandler->clearPort();
+  std::cout << "Detecting protocol...\n";
+
+  // Try Protocol 2.0 first
+  dynamixel::PacketHandler* packetHandler2 =
+      dynamixel::PacketHandler::getPacketHandler(2.0);
+  uint16_t model_number_2 = 0;
+  dxl_comm_result = packetHandler2->ping(portHandler, 1, &model_number_2, &dxl_error);
+
+  if (dxl_comm_result == COMM_SUCCESS && dxl_error == 0) {
+    model_number_out = model_number_2;
+    std::cout << "Protocol 2.0 | Model: " << model_number_2
+              << " (0x" << std::hex << model_number_2 << std::dec << ")\n";
+    portHandler->closePort();
+    return 0;
+  }
+
+  // Try Protocol 1.0
+  dynamixel::PacketHandler* packetHandler1 =
+      dynamixel::PacketHandler::getPacketHandler(1.0);
+  uint16_t model_number_1 = 0;
+  dxl_comm_result = packetHandler1->ping(portHandler, 1, &model_number_1, &dxl_error);
+
+  if (dxl_comm_result == COMM_SUCCESS && dxl_error == 0) {
+    std::cerr << "error: Protocol 1.0 detected (model " << model_number_1
+              << ") but this controller only supports Protocol 2.0\n";
+    portHandler->closePort();
+    return 1;
+  }
+
+  std::cerr << "error: no servo responded on " << device << "\n"
+            << "  1) Servo is powered\n"
+            << "  2) USB adapter wiring: RX->TX, TX->RX, GND->GND\n"
+            << "  3) Try a different baud rate (1000000, 115200, 57600, 38400)\n"
+            << "  4) Try a different servo ID (broadcast: 0xFE)\n"
+            << "  5) USB adapter voltage levels (some need 5V)\n";
+  portHandler->closePort();
+  return 1;
+}
+
+// Poll present positions until all targeted servos are within threshold or max attempts.
+void pollPositions(DynamixelController& controller,
+                   const std::unordered_map<uint8_t, double>& targets) {
+  for (int attempt = 0; attempt < MAX_READ_ATTEMPTS; ++attempt) {
+    auto positions = controller.readPositions();
+    if (!positions.isSuccess()) {
+      std::cerr << "warn: read failed (" << attempt + 1 << "/"
+                << MAX_READ_ATTEMPTS << "): "
+                << dynamixel::getErrorMessage(positions.error()) << '\n';
+      continue;
+    }
+
+    printPositions(positions.value());
+
+    bool all_reached = true;
+    for (const auto & [id, target_rad] : targets) {
+      auto it = positions.value().find(id);
+      if (it == positions.value().end() ||
+          std::abs(it->second - target_rad) > POSITION_THRESHOLD_RAD) {
+        all_reached = false;
+        break;
+      }
+    }
+
+    if (all_reached) {
+      std::cout << "Target reached.\n";
+      return;
+    }
+  }
+  std::cerr << "warn: target not reached after "
+            << MAX_READ_ATTEMPTS << " reads\n";
+}
+
+int main(int argc, char** argv)
+try {
   // Parse CLI arguments
   for (int i = 1; i < argc; i++) {
     std::string arg = argv[i];
@@ -33,8 +157,6 @@ int main(int argc, char** argv) {
       DEVICE_NAME = argv[++i];
     } else if (arg == "--baud" && i + 1 < argc) {
       BAUD_RATE = std::atoi(argv[++i]);
-    } else if (arg == "--id" && i + 1 < argc) {
-      DXL_ID = static_cast<uint8_t>(std::atoi(argv[++i]));
     } else {
       std::cerr << "Unknown or incomplete argument: " << arg << "\n";
       printUsage(argv[0]);
@@ -42,191 +164,145 @@ int main(int argc, char** argv) {
     }
   }
 
-  // Setup port handler
-  dynamixel::PortHandler *portHandler =
-      dynamixel::PortHandler::getPortHandler(DEVICE_NAME);
-
-  uint8_t dxl_error = 0;
-  int dxl_comm_result = COMM_TX_FAIL;
+  // Protocol auto-detection (diagnostic pre-check using raw SDK)
   uint16_t model_number = 0;
-  dynamixel::PacketHandler *packetHandler = nullptr;
-
-  // Open port
-  if (!portHandler->openPort()) {
-    std::cout << "[ERROR] Failed to open the port!\n";
-    std::cout << "Check: 1) Port exists: ls " << DEVICE_NAME << "\n";
-    std::cout << "       2) You have read/write permissions: add user to 'dialout' group\n";
-    std::cout << "       3) No other process is using the port\n";
+  if (detectProtocol(DEVICE_NAME, BAUD_RATE, model_number) != 0) {
     return 1;
   }
-  std::cout << "Succeeded to open the port!\n";
 
-  // Set baud rate
-  if (!portHandler->setBaudRate(BAUD_RATE)) {
-    std::cout << "[ERROR] Failed to change the baudrate!\n";
-    std::cout << "Check: Your servo might need a different baud rate.\n";
-    std::cout << "Common rates: 1000000, 115200, 57600, 38400\n";
-    portHandler->closePort();
+  // Construct the controller (uses protocol 2.0 internally)
+  DynamixelController controller(DEVICE_NAME, BAUD_RATE);
+
+  auto scan = controller.scan();
+  if (!scan.isSuccess()) {
+    std::cerr << "error: scan failed: "
+              << dynamixel::getErrorMessage(scan.error()) << '\n';
     return 1;
   }
-  std::cout << "Succeeded to change the baudrate!\n";
+  if (scan.value().empty()) {
+    std::cerr << "error: no servos found\n";
+    return 1;
+  }
 
-  // Clear port buffer
-  portHandler->clearPort();
+  std::cout << "Servos:";
+  printServos(scan.value());
+  std::cout << '\n';
 
-  // Auto-detect protocol (MX-106R with 2.0 firmware most likely uses Protocol 2.0)
-  std::cout << "Auto-detecting servo protocol...\n";
-
-  // Try Protocol 2.0 first
-  packetHandler = dynamixel::PacketHandler::getPacketHandler(2.0);
-  uint16_t model_number_2 = 0;
-  dxl_comm_result = packetHandler->ping(portHandler, DXL_ID, &model_number_2, &dxl_error);
-
-  if (dxl_comm_result == COMM_SUCCESS && dxl_error == 0) {
-    model_number = model_number_2;
-    std::cout << "Detected Protocol: 2.0\n";
-  } else {
-    // Print diagnostic for the Protocol 2.0 failure
-    std::cout << "Protocol 2.0 ping failed:\n";
-    std::cout << "  Comm result: " << packetHandler->getTxRxResult(dxl_comm_result) << std::endl;
-    if (dxl_error != 0)
-      std::cout << "  Hardware error: " << packetHandler->getRxPacketError(dxl_error) << std::endl;
-
-    // Try Protocol 1.0
-    packetHandler = dynamixel::PacketHandler::getPacketHandler(1.0);
-    uint16_t model_number_1 = 0;
-    dxl_comm_result = packetHandler->ping(portHandler, DXL_ID, &model_number_1, &dxl_error);
-
-    if (dxl_comm_result == COMM_SUCCESS && dxl_error == 0) {
-      model_number = model_number_1;
-      std::cout << "Detected Protocol: 1.0\n";
-    } else {
-      std::cout << "Protocol 1.0 ping failed:\n";
-      std::cout << "  Comm result: " << packetHandler->getTxRxResult(dxl_comm_result) << std::endl;
-      if (dxl_error != 0)
-        std::cout << "  Hardware error: " << packetHandler->getRxPacketError(dxl_error) << std::endl;
-
-      std::cout << "[ERROR] Failed to detect protocol - neither 1.0 nor 2.0 worked\n";
-      std::cout << "Check: 1) Servo is powered\n";
-      std::cout << "       2) USB adapter is properly connected (RX->TX, TX->RX, GND->GND)\n";
-      std::cout << "       3) Try a different baud rate (1000000, 115200, 57600, 38400)\n";
-      std::cout << "       4) Correct servo ID (try broadcast ping with ID 0xFE)\n";
-      std::cout << "       5) USB adapter voltage levels (some need 5V, servo TX is 5V)\n";
-      portHandler->closePort();
+  for (uint8_t id : scan.value()) {
+    auto torque = controller.enableTorque(id);
+    if (!torque.isSuccess()) {
+      std::cerr << "error: torque enable failed for ID "
+                << static_cast<int>(id) << ": "
+                << dynamixel::getErrorMessage(torque.error()) << '\n';
       return 1;
     }
   }
+  std::cout << "Torque enabled.\n\n";
 
-  std::cout << "Ping successful! Model number: " << model_number 
-            << " (0x" << std::hex << model_number << std::dec << ")\n";
+  std::cout << "Commands:\n"
+            << "  <radians>   move all servos to angle\n"
+            << "  m           multi-servo move\n"
+            << "  r           read current positions\n"
+            << "  q           quit\n";
 
-  // Enable torque on the servo
-  std::cout << "Attempting to enable torque on Dynamixel ID " 
-            << static_cast<int>(DXL_ID) << "...\n";
-  uint8_t torque_enable_data = 1;
-  dxl_comm_result = packetHandler->write1ByteTxRx(
-      portHandler, DXL_ID, TORQUE_ENABLE_ADDRESS, torque_enable_data, &dxl_error);
-
-  if (dxl_comm_result != COMM_SUCCESS) {
-    std::cout << "[ERROR] Communication failed: " 
-              << packetHandler->getTxRxResult(dxl_comm_result) << std::endl;
-    std::cout << "Check: 1) Servo is powered, 2) Correct serial port, "
-              << "3) Correct baud rate (" << BAUD_RATE << "), "
-              << "4) Correct servo ID (" << static_cast<int>(DXL_ID) << ")\n";
-    portHandler->closePort();
-    return 1;
-  } else if (dxl_error != 0) {
-    std::cout << "[ERROR] Hardware error: " 
-              << packetHandler->getRxPacketError(dxl_error) << std::endl;
-    portHandler->closePort();
-    return 1;
-  } else {
-    std::cout << "Dynamixel#" << static_cast<int>(DXL_ID) 
-              << " has been successfully connected\n";
-  }
-
-  // Position control loop
-  int target_position;
+  std::string input;
   while (true) {
-    std::cout << "Enter target position (0 ~ 4095): ";
-    std::cin >> target_position;
+    std::cout << "> ";
+    if (!(std::cin >> input) || input == "q") {
+      break;
+    }
 
-    if (target_position == -1) {
-      break; // Exit on -1 input
-    } else if (target_position < 0 || target_position > 4095) {
-      std::cout << "Position must be between 0 and 4095." << std::endl;
+    if (input == "r") {
+      auto positions = controller.readPositions();
+      if (positions.isSuccess()) {
+        printPositions(positions.value());
+      } else {
+        std::cerr << "error: read failed: "
+                  << dynamixel::getErrorMessage(positions.error()) << '\n';
+      }
       continue;
     }
 
-    // Set goal position
-    dxl_comm_result = packetHandler->write4ByteTxRx(
-        portHandler, DXL_ID, GOAL_POSITION_ADDRESS, 
-        static_cast<uint32_t>(target_position), &dxl_error);
+    if (input == "m") {
+      std::cout << "Enter 'ID radians' per line. go to move, b to cancel.\n";
+      std::unordered_map<uint8_t, double> targets;
+      bool go_back = false;
 
-    if (dxl_comm_result != COMM_SUCCESS) {
-      std::cout << "[ERROR] Failed to set target position: " 
-                << packetHandler->getTxRxResult(dxl_comm_result) << std::endl;
-      continue;
-    } else if (dxl_error != 0) {
-      std::cout << "[ERROR] Hardware error setting position: " 
-                << packetHandler->getRxPacketError(dxl_error) << std::endl;
-      continue;
-    }
-
-    // Read present position until we reach the target (with retry limit)
-    uint32_t present_position = 0;
-    int read_attempts = 0;
-    bool position_reached = false;
-
-    while (read_attempts < MAX_READ_ATTEMPTS) {
-      dxl_comm_result = packetHandler->read4ByteTxRx(
-          portHandler, DXL_ID, PRESENT_POSITION_ADDRESS, 
-          &present_position, &dxl_error);
-
-      if (dxl_comm_result != COMM_SUCCESS) {
-        read_attempts++;
-        std::cout << "[WARNING] Failed to read position (attempt " 
-                  << read_attempts << "/" << MAX_READ_ATTEMPTS << "): "
-                  << packetHandler->getTxRxResult(dxl_comm_result) << std::endl;
-        if (read_attempts >= MAX_READ_ATTEMPTS) {
-          std::cout << "[ERROR] Too many read failures, skipping to next command.\n";
+      while (true) {
+        std::cout << "  ";
+        std::string line;
+        std::getline(std::cin >> std::ws, line);
+        if (line == "go") {
           break;
         }
-      } else if (dxl_error != 0) {
-        std::cout << "[ERROR] Hardware error reading position: " 
-                  << packetHandler->getRxPacketError(dxl_error) << std::endl;
-        break;
-      } else {
-        read_attempts = 0; // Reset on success
-        std::cout << "Current Position: " << present_position << std::endl;
-
-        // Check if we've reached the target position (within threshold)
-        if (std::abs(static_cast<int>(target_position - present_position)) 
-            <= POSITION_THRESHOLD) {
-          position_reached = true;
+        if (line == "b") {
+          go_back = true;
           break;
+        }
+
+        int id_number = 0;
+        double radians = 0.0;
+        std::string extra;
+        std::istringstream pair(line);
+        if (!(pair >> id_number >> radians) || (pair >> extra)) {
+          std::cerr << "  invalid pair: " << line << '\n';
+          continue;
+        }
+        if (id_number < 0 || id_number > 252) {
+          std::cerr << "  invalid servo ID: " << id_number << '\n';
+          continue;
+        }
+        const auto id = static_cast<uint8_t>(id_number);
+        if (std::find(scan.value().begin(), scan.value().end(), id) == scan.value().end()) {
+          std::cerr << "  servo ID not found: " << id_number << '\n';
+          continue;
+        }
+        targets[id] = radians;
+        std::cout << "  ID " << id_number << " -> " << radians << " rad\n";
+      }
+
+      if (go_back) {
+        continue;
+      }
+      if (!targets.empty()) {
+        auto result = controller.setTargetPosition(targets);
+        if (!result.isSuccess()) {
+          std::cerr << "error: move failed: "
+                    << dynamixel::getErrorMessage(result.error()) << '\n';
+        } else {
+          pollPositions(controller, targets);
         }
       }
+      continue;
     }
 
-    if (!position_reached && read_attempts >= MAX_READ_ATTEMPTS) {
-      std::cout << "[WARNING] Position may not have been reached.\n";
+    double target_radians = 0.0;
+    try {
+      std::size_t parsed = 0;
+      target_radians = std::stod(input, &parsed);
+      if (parsed != input.size()) {
+        throw std::invalid_argument("not a number");
+      }
+    } catch (const std::exception &) {
+      std::cerr << "unknown command. Use <radians>, m, r, or q.\n";
+      continue;
+    }
+
+    auto result = controller.setTargetPosition(target_radians);
+    if (!result.isSuccess()) {
+      std::cerr << "error: move failed: "
+                << dynamixel::getErrorMessage(result.error()) << '\n';
+    } else {
+      std::unordered_map<uint8_t, double> targets;
+      for (uint8_t id : scan.value()) {
+        targets.emplace(id, target_radians);
+      }
+      pollPositions(controller, targets);
     }
   }
-
-  // Disable torque and clean up
-  std::cout << "Disabling torque...\n";
-  uint8_t torque_disable_data = 0;
-  dxl_comm_result = packetHandler->write1ByteTxRx(
-      portHandler, DXL_ID, TORQUE_ENABLE_ADDRESS, torque_disable_data, &dxl_error);
-
-  if (dxl_comm_result != COMM_SUCCESS) {
-    std::cout << "[WARNING] Failed to disable torque: " 
-              << packetHandler->getTxRxResult(dxl_comm_result) << std::endl;
-  }
-
-  portHandler->closePort();
-  std::cout << "Port closed. Exiting...\n";
 
   return 0;
+} catch (const std::exception & error) {
+  std::cerr << error.what() << '\n';
+  return 1;
 }
